@@ -76,6 +76,10 @@ public class UClass : UStruct
 
     public Assets.Exports.UObject? ConstructObject(EObjectFlags flags)
     {
+        if (Name.StartsWith("AnimGraphNode"))
+        {
+            var pp = 1;
+        }
         var type = ObjectTypeRegistry.Get(Name);
         if (type is null && this is UBlueprintGeneratedClass && flags.HasFlag(EObjectFlags.RF_ClassDefaultObject))
         {
