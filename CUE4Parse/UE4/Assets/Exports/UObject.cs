@@ -135,7 +135,14 @@ public class UObject : AbstractPropertyHolder
             if (Class.Object?.Value is not UStruct struc)
                 throw new ParserException(Ar, "Found unversioned properties but object's class is not a struct");
 
-            DeserializePropertiesUnversioned(Properties = [], Ar, struc);
+            try
+            {
+                DeserializePropertiesUnversioned(Properties = [], Ar, struc);
+            }
+            catch (Exception e)
+            {
+                throw new ParserException(Ar, "Failed to deserialize unversioned properties", e);
+            }
         }
         else
         {
@@ -293,7 +300,7 @@ public class UObject : AbstractPropertyHolder
                 }
                 else
                 {
-                    throw new ParserException(Ar, $"{type}: Unknown property with value {val}. Can't proceed with serialization (Serialized {properties.Count} properties until now)");
+                    //throw new ParserException(Ar, $"{type}: Unknown property with value {val}. Can't proceed with serialization (Serialized {properties.Count} properties until now)");
                 }
             }
             // The value is serialized as zero meaning we don't have to read any bytes here
