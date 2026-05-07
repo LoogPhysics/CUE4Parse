@@ -7,6 +7,7 @@ using CUE4Parse.UE4.Assets.Objects;
 using CUE4Parse.UE4.Assets.Objects.Properties;
 using CUE4Parse.UE4.Assets.Readers;
 using CUE4Parse.UE4.Assets.Utils;
+using CUE4Parse.UE4.Objects.Core.i18N;
 using CUE4Parse.UE4.Objects.Core.Misc;
 using CUE4Parse.UE4.Objects.UObject;
 using Newtonsoft.Json;
@@ -155,18 +156,16 @@ public class UAnimBlueprintGeneratedClass : UBlueprintGeneratedClass
 		return true;
 	}
 
-	public bool TryGetAnimNodePropertyData(string propertyName, out FAnimNodePropertyData propertyData)
+	public bool TryGetAnimNodePropertyData(int animNodePropertyIndex, out FAnimNodePropertyData propertyData)
 	{
-		var match = AnimNodePropertyData.FirstOrDefault(candidate =>
-			candidate.Name.Equals(propertyName, StringComparison.Ordinal));
-		if (match is null)
+		if (animNodePropertyIndex >= 0 && animNodePropertyIndex < AnimNodePropertyData.Length)
 		{
-			propertyData = null!;
-			return false;
+			propertyData = AnimNodePropertyData[animNodePropertyIndex];
+			return true;
 		}
 
-		propertyData = match;
-		return true;
+		propertyData = null!;
+		return false;
 	}
 
 	public bool TryGetAnimNodeData(int animNodePropertyIndex, out FAnimNodeData nodeData)
@@ -333,6 +332,30 @@ public class UAnimBlueprintGeneratedClass : UBlueprintGeneratedClass
 		return false;
 	}
 
+	public bool TryGetAnimNodeProperties(int animNodePropertyIndex, out FAnimNodePropertyCollection properties)
+	{
+		if (!TryGetAnimNodeData(animNodePropertyIndex, out var nodeData))
+		{
+			properties = null!;
+			return false;
+		}
+
+		properties = GetAnimNodeProperties(nodeData);
+		return true;
+	}
+
+	public bool TryGetAnimNodeProperties(string propertyName, out FAnimNodePropertyCollection properties)
+	{
+		if (!TryGetAnimNodeData(propertyName, out var nodeData))
+		{
+			properties = null!;
+			return false;
+		}
+
+		properties = GetAnimNodeProperties(nodeData);
+		return true;
+	}
+
 	public bool TryGetRootNodeIndexForFunction(string functionName, out int outputPoseNodeIndex)
 	{
 		outputPoseNodeIndex = -1;
@@ -415,6 +438,277 @@ public class UAnimBlueprintGeneratedClass : UBlueprintGeneratedClass
 		}
 
 		return [.. result];
+	}
+
+	private FAnimNodePropertySchemaEntry[] BuildAnimNodePropertySchema(FAnimNodeData nodeData)
+	{
+		var result = new List<FAnimNodePropertySchemaEntry>();
+		var propertyIndexByName = new Dictionary<string, int>(StringComparer.Ordinal);
+
+		if (TryGetNodeTypeData(nodeData.StructTypeName, out var nodeTypeData))
+		{
+			foreach (var (propertyName, propertyIndex) in nodeTypeData.NameToIndexMap.OrderBy(static pair => pair.Value))
+			{
+				result.Add(new FAnimNodePropertySchemaEntry(propertyName, propertyIndex, string.Empty, null));
+				propertyIndexByName[propertyName] = propertyIndex;
+			}
+		}
+
+		if (!TryLoadAnimNodeStruct(nodeData.StructTypeName, out var nodeStruct) || nodeStruct.ChildProperties is not { Length: > 0 } childProperties)
+			return [.. result];
+
+		for (var propertyIndex = 0; propertyIndex < childProperties.Length; propertyIndex++)
+		{
+			var propertyName = childProperties[propertyIndex].Name.Text;
+			var declaredType = ResolveDeclaredPropertyType(childProperties[propertyIndex]);
+
+			if (propertyIndexByName.TryGetValue(propertyName, out var schemaIndex))
+			{
+				var existingIndex = result.FindIndex(entry =>
+					entry.PropertyIndex == schemaIndex && entry.Name.Equals(propertyName, StringComparison.Ordinal));
+				if (existingIndex >= 0)
+					result[existingIndex] = new FAnimNodePropertySchemaEntry(propertyName, schemaIndex, declaredType, childProperties[propertyIndex]);
+				continue;
+			}
+
+			result.Add(new FAnimNodePropertySchemaEntry(propertyName, propertyIndex, declaredType, childProperties[propertyIndex]));
+			propertyIndexByName[propertyName] = propertyIndex;
+		}
+
+		result.Sort(static (left, right) => left.PropertyIndex.CompareTo(right.PropertyIndex));
+		return [.. result];
+	}
+
+	private FAnimNodePropertyCollection GetAnimNodeProperties(FAnimNodeData nodeData)
+	{
+		var propertySchema = BuildAnimNodePropertySchema(nodeData);
+		var propertiesByName = new Dictionary<string, FAnimNodeResolvedProperty>(StringComparer.Ordinal);
+
+		foreach (var schemaEntry in propertySchema)
+			GetOrCreateResolvedProperty(propertiesByName, schemaEntry.Name, schemaEntry.PropertyIndex, schemaEntry.DeclaredType);
+
+		var defaultValue = nodeData.PropertyData?.DefaultValue;
+		if (defaultValue is null && !string.IsNullOrEmpty(nodeData.PropertyName))
+			defaultValue = ResolveDefaultValue(nodeData.PropertyName);
+
+		AddStructProperties(defaultValue, EAnimNodePropertySource.DefaultObject, propertySchema, propertiesByName);
+		AddEntryProperties(nodeData, propertySchema, propertiesByName);
+
+		var resolvedProperties = propertiesByName.Values
+			.OrderBy(static property => property.PropertyIndex)
+			.ThenBy(static property => property.Name, StringComparer.Ordinal)
+			.ToArray();
+
+		return new FAnimNodePropertyCollection(nodeData, resolvedProperties);
+	}
+
+	private static FAnimNodeResolvedProperty GetOrCreateResolvedProperty(
+		IDictionary<string, FAnimNodeResolvedProperty> propertiesByName,
+		string propertyName,
+		int propertyIndex,
+		string declaredType)
+	{
+		if (!propertiesByName.TryGetValue(propertyName, out var property))
+		{
+			property = new FAnimNodeResolvedProperty(propertyName, propertyIndex, declaredType);
+			propertiesByName[propertyName] = property;
+			return property;
+		}
+
+		property.TryUpdateMetadata(propertyIndex, declaredType);
+		return property;
+	}
+
+	private void AddEntryProperties(
+		FAnimNodeData nodeData,
+		IReadOnlyList<FAnimNodePropertySchemaEntry> propertySchema,
+		IDictionary<string, FAnimNodeResolvedProperty> propertiesByName)
+	{
+		for (var propertyIndex = 0; propertyIndex < nodeData.Entries.Length; propertyIndex++)
+		{
+			if (nodeData.GetResolvedEntryIndex(propertyIndex) < 0 ||
+				!nodeData.TryGetRawValue(this, propertyIndex, out var propertyTag) ||
+				propertyTag.Tag is null)
+				continue;
+
+			var source = nodeData.IsInstanceDataEntry(propertyIndex, out _)
+				? EAnimNodePropertySource.MutableDataEntry
+				: EAnimNodePropertySource.ConstantDataEntry;
+
+			var propertyName = propertyTag.Name.Text;
+			var resolvedPropertyIndex = ResolveSchemaPropertyIndex(propertySchema, propertyName, propertyTag);
+			var schemaEntry = GetSchemaEntry(propertySchema, propertyName, resolvedPropertyIndex);
+			var resolvedProperty = GetOrCreateResolvedProperty(
+				propertiesByName,
+				schemaEntry.Name ?? propertyName,
+				schemaEntry.PropertyIndex >= 0 ? schemaEntry.PropertyIndex : resolvedPropertyIndex,
+				schemaEntry.DeclaredType);
+
+			var resolvedValue = TryResolveNodeEntryValue(nodeData, propertyIndex, schemaEntry.PropertyField, out var typedValue)
+				? typedValue
+				: ResolvePropertyValue(propertyTag, schemaEntry.PropertyField);
+
+			resolvedProperty.AddValue(new FAnimNodePropertyValue(
+				source,
+				propertyIndex,
+				propertyTag,
+				resolvedValue));
+		}
+	}
+
+	private void AddStructProperties(
+		FStructFallback? structData,
+		EAnimNodePropertySource source,
+		IReadOnlyList<FAnimNodePropertySchemaEntry> propertySchema,
+		IDictionary<string, FAnimNodeResolvedProperty> propertiesByName)
+	{
+		if (structData?.Properties is not { Count: > 0 } propertyTags)
+			return;
+
+		foreach (var propertyTag in propertyTags)
+		{
+			if (propertyTag.Tag is null)
+				continue;
+
+			var propertyName = propertyTag.Name.Text;
+			var resolvedPropertyIndex = ResolveSchemaPropertyIndex(propertySchema, propertyName, propertyTag);
+			var schemaEntry = GetSchemaEntry(propertySchema, propertyName, resolvedPropertyIndex);
+			var resolvedProperty = GetOrCreateResolvedProperty(
+				propertiesByName,
+				schemaEntry.Name ?? propertyName,
+				schemaEntry.PropertyIndex >= 0 ? schemaEntry.PropertyIndex : resolvedPropertyIndex,
+				schemaEntry.DeclaredType);
+
+			resolvedProperty.AddValue(new FAnimNodePropertyValue(
+				source,
+				resolvedPropertyIndex,
+				propertyTag,
+				ResolvePropertyValue(propertyTag, schemaEntry.PropertyField)));
+		}
+	}
+
+	private bool TryResolveNodeEntryValue(FAnimNodeData nodeData, int propertyIndex, FField? propertyField, out object? value)
+	{
+		if (propertyField is null)
+		{
+			value = null;
+			return false;
+		}
+
+		switch (propertyField)
+		{
+			case FNameProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out FName nameValue))
+				{
+					value = nameValue;
+					return true;
+				}
+				break;
+			case FTextProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out FText textValue))
+				{
+					value = textValue;
+					return true;
+				}
+				break;
+			case FBoolProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out bool boolValue))
+				{
+					value = boolValue;
+					return true;
+				}
+				break;
+			case FInt8Property:
+				if (nodeData.TryGetValue(this, propertyIndex, out sbyte int8Value))
+				{
+					value = int8Value;
+					return true;
+				}
+				break;
+			case FInt16Property:
+				if (nodeData.TryGetValue(this, propertyIndex, out short int16Value))
+				{
+					value = int16Value;
+					return true;
+				}
+				break;
+			case FIntProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out int intValue))
+				{
+					value = intValue;
+					return true;
+				}
+				break;
+			case FInt64Property:
+				if (nodeData.TryGetValue(this, propertyIndex, out long int64Value))
+				{
+					value = int64Value;
+					return true;
+				}
+				break;
+			case FUInt16Property:
+				if (nodeData.TryGetValue(this, propertyIndex, out ushort uint16Value))
+				{
+					value = uint16Value;
+					return true;
+				}
+				break;
+			case FUInt32Property:
+				if (nodeData.TryGetValue(this, propertyIndex, out uint uint32Value))
+				{
+					value = uint32Value;
+					return true;
+				}
+				break;
+			case FUInt64Property:
+				if (nodeData.TryGetValue(this, propertyIndex, out ulong uint64Value))
+				{
+					value = uint64Value;
+					return true;
+				}
+				break;
+			case FFloatProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out float floatValue))
+				{
+					value = floatValue;
+					return true;
+				}
+				break;
+			case FDoubleProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out double doubleValue))
+				{
+					value = doubleValue;
+					return true;
+				}
+				break;
+			case FStrProperty:
+			case FUtf8StrProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out string stringValue))
+				{
+					value = stringValue;
+					return true;
+				}
+				break;
+			case FSoftClassProperty:
+			case FSoftObjectProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out FSoftObjectPath softObjectValue))
+				{
+					value = softObjectValue;
+					return true;
+				}
+				break;
+			case FClassProperty:
+			case FObjectProperty:
+				if (nodeData.TryGetValue(this, propertyIndex, out FPackageIndex objectValue))
+				{
+					value = objectValue;
+					return true;
+				}
+				break;
+		}
+
+		value = null;
+		return false;
 	}
 
 	private Dictionary<string, FAnimNodeStructData> BuildNodeTypeData()
@@ -743,6 +1037,151 @@ public class UAnimBlueprintGeneratedClass : UBlueprintGeneratedClass
 		return false;
 	}
 
+	private static int ResolveSchemaPropertyIndex(IReadOnlyList<FAnimNodePropertySchemaEntry> propertySchema,
+		string propertyName, FPropertyTag propertyTag)
+	{
+		foreach (var schemaEntry in propertySchema)
+		{
+			if (schemaEntry.Name.Equals(propertyName, StringComparison.Ordinal))
+				return schemaEntry.PropertyIndex;
+		}
+
+		return propertyTag.ArrayIndex > 0 ? propertyTag.ArrayIndex : -1;
+	}
+
+	private static FAnimNodePropertySchemaEntry GetSchemaEntry(IReadOnlyList<FAnimNodePropertySchemaEntry> propertySchema,
+		string propertyName, int propertyIndex)
+	{
+		foreach (var schemaEntry in propertySchema)
+		{
+			if (schemaEntry.PropertyIndex == propertyIndex || schemaEntry.Name.Equals(propertyName, StringComparison.Ordinal))
+				return schemaEntry;
+		}
+
+		return default;
+	}
+
+	private static object? ResolvePropertyValue(FPropertyTag propertyTag, FField? propertyField)
+	{
+		if (propertyTag.Tag is null)
+			return null;
+
+		if (propertyField is null)
+			return ResolveUntypedPropertyValue(propertyTag.Tag);
+
+		return propertyField switch
+		{
+			FArrayProperty arrayProperty => ResolveArrayPropertyValue(propertyTag.Tag, arrayProperty.Inner),
+			FSetProperty setProperty => ResolveSetPropertyValue(propertyTag.Tag, setProperty.ElementProp),
+			FMapProperty mapProperty => ResolveMapPropertyValue(propertyTag.Tag, mapProperty.KeyProp, mapProperty.ValueProp),
+			FStructProperty => ResolveStructPropertyValue(propertyTag.Tag),
+			FNameProperty => propertyTag.Tag.GetValue<FName>(),
+			FTextProperty => propertyTag.Tag.GetValue<FText>(),
+			FBoolProperty => propertyTag.Tag.GetValue<bool>(),
+			FByteProperty => ResolveUntypedPropertyValue(propertyTag.Tag),
+			FInt8Property => propertyTag.Tag.GetValue<sbyte>(),
+			FInt16Property => propertyTag.Tag.GetValue<short>(),
+			FIntProperty => propertyTag.Tag.GetValue<int>(),
+			FInt64Property => propertyTag.Tag.GetValue<long>(),
+			FFloatProperty => propertyTag.Tag.GetValue<float>(),
+			FDoubleProperty => propertyTag.Tag.GetValue<double>(),
+			FUInt16Property => propertyTag.Tag.GetValue<ushort>(),
+			FUInt32Property => propertyTag.Tag.GetValue<uint>(),
+			FUInt64Property => propertyTag.Tag.GetValue<ulong>(),
+			FStrProperty => propertyTag.Tag.GetValue<string>(),
+			FUtf8StrProperty => propertyTag.Tag.GetValue<string>(),
+			FSoftClassProperty => propertyTag.Tag.GetValue(typeof(FSoftObjectPath)) ?? ResolveUntypedPropertyValue(propertyTag.Tag),
+			FSoftObjectProperty => propertyTag.Tag.GetValue(typeof(FSoftObjectPath)) ?? ResolveUntypedPropertyValue(propertyTag.Tag),
+			FClassProperty => propertyTag.Tag.GetValue<FPackageIndex>() ?? ResolveUntypedPropertyValue(propertyTag.Tag),
+			FObjectProperty => propertyTag.Tag.GetValue<FPackageIndex>() ?? ResolveUntypedPropertyValue(propertyTag.Tag),
+			FEnumProperty => ResolveUntypedPropertyValue(propertyTag.Tag),
+			_ => ResolveUntypedPropertyValue(propertyTag.Tag)
+		};
+	}
+
+	private static object? ResolveStructPropertyValue(FPropertyTagType propertyTagType)
+	{
+		if (propertyTagType.GetValue(typeof(FScriptStruct)) is FScriptStruct scriptStruct)
+			return scriptStruct.StructType is not null ? scriptStruct.StructType : scriptStruct;
+
+		return ResolveUntypedPropertyValue(propertyTagType);
+	}
+
+	private static object? ResolveArrayPropertyValue(FPropertyTagType propertyTagType, FProperty? innerProperty)
+	{
+		if (propertyTagType.GetValue(typeof(UScriptArray)) is not UScriptArray arrayValue)
+			return ResolveUntypedPropertyValue(propertyTagType);
+
+		var result = new object?[arrayValue.Properties.Count];
+		for (var index = 0; index < arrayValue.Properties.Count; index++)
+			result[index] = ResolvePropertyTagTypeValue(arrayValue.Properties[index], innerProperty);
+
+		return result;
+	}
+
+	private static object? ResolveSetPropertyValue(FPropertyTagType propertyTagType, FProperty? elementProperty)
+	{
+		if (propertyTagType.GetValue(typeof(UScriptSet)) is not UScriptSet setValue)
+			return ResolveUntypedPropertyValue(propertyTagType);
+
+		var result = new object?[setValue.Properties.Count];
+		for (var index = 0; index < setValue.Properties.Count; index++)
+			result[index] = ResolvePropertyTagTypeValue(setValue.Properties[index], elementProperty);
+
+		return result;
+	}
+
+	private static object? ResolveMapPropertyValue(FPropertyTagType propertyTagType, FProperty? keyProperty, FProperty? valueProperty)
+	{
+		if (propertyTagType.GetValue(typeof(UScriptMap)) is not UScriptMap mapValue)
+			return ResolveUntypedPropertyValue(propertyTagType);
+
+		var result = new List<KeyValuePair<object?, object?>>(mapValue.Properties.Count);
+		foreach (var (key, value) in mapValue.Properties)
+		{
+			result.Add(new KeyValuePair<object?, object?>(
+				ResolvePropertyTagTypeValue(key, keyProperty),
+				value is not null ? ResolvePropertyTagTypeValue(value, valueProperty) : null));
+		}
+
+		return result;
+	}
+
+	private static object? ResolvePropertyTagTypeValue(FPropertyTagType? propertyTagType, FField? propertyField)
+	{
+		if (propertyTagType is null)
+			return null;
+
+		var propertyTag = new FPropertyTag
+		{
+			Tag = propertyTagType,
+			PropertyType = new FName(propertyTagType.GetType().Name)
+		};
+
+		return ResolvePropertyValue(propertyTag, propertyField);
+	}
+
+	private static object? ResolveUntypedPropertyValue(FPropertyTagType propertyTagType)
+	{
+		if (propertyTagType.GetValue(typeof(FScriptStruct)) is FScriptStruct scriptStruct)
+			return scriptStruct.StructType is not null ? scriptStruct.StructType : scriptStruct;
+
+		if (propertyTagType.GetValue(typeof(UScriptArray)) is UScriptArray arrayValue)
+			return arrayValue.Properties.Select(static item => ResolveUntypedPropertyValue(item)).ToArray();
+
+		if (propertyTagType.GetValue(typeof(UScriptSet)) is UScriptSet setValue)
+			return setValue.Properties.Select(static item => ResolveUntypedPropertyValue(item)).ToArray();
+
+		if (propertyTagType.GetValue(typeof(UScriptMap)) is UScriptMap mapValue)
+			return mapValue.Properties
+				.Select(static pair => new KeyValuePair<object?, object?>(
+					ResolveUntypedPropertyValue(pair.Key),
+					pair.Value is not null ? ResolveUntypedPropertyValue(pair.Value) : null))
+				.ToList();
+
+		return propertyTagType.GenericValue;
+	}
+
 	private int ResolveRootAnimNodeIndex()
 	{
 		if (TryGetRootNodeIndexForFunction("AnimGraph", out var animGraphRootNodeIndex))
@@ -963,6 +1402,30 @@ public class UAnimBlueprintGeneratedClass : UBlueprintGeneratedClass
 	private static bool IsStructName(FStructProperty structProperty, string structName) =>
 		structProperty.Struct.ResolvedObject?.Name.Text.Equals(structName, StringComparison.OrdinalIgnoreCase) == true;
 
+	private static string ResolveDeclaredPropertyType(FField property)
+	{
+		return property switch
+		{
+			FStructProperty structProperty => structProperty.Struct.ResolvedObject?.Name.Text ?? "Struct",
+			FArrayProperty arrayProperty => $"Array<{(arrayProperty.Inner is not null ? ResolveDeclaredPropertyType(arrayProperty.Inner) : "Unknown") }>",
+			FEnumProperty enumProperty => enumProperty.Enum.ResolvedObject?.Name.Text ?? "Enum",
+			FSoftClassProperty => "SoftClass",
+			FSoftObjectProperty => "SoftObject",
+			FClassProperty classProperty => classProperty.MetaClass?.Name ?? "Class",
+			FObjectProperty objectProperty => objectProperty.PropertyClass?.Name ?? "Object",
+			FNameProperty => "Name",
+			FStrProperty => "String",
+			FTextProperty => "Text",
+			FBoolProperty => "Bool",
+			FByteProperty => "Byte",
+			FIntProperty => "Int",
+			FInt64Property => "Int64",
+			FFloatProperty => "Float",
+			FDoubleProperty => "Double",
+			_ => property.GetType().Name
+		};
+	}
+
 	private static bool TryGetNodeGuid(FAnimNodePropertyData propertyData, out FGuid guid)
 	{
 		if (propertyData.DefaultValue is not null && propertyData.DefaultValue.TryGetValue(out guid, "NodeGuid"))
@@ -1159,6 +1622,84 @@ public enum EAnimNodeDataFlags : uint
 	HasBecomeRelevantFunction = 0x00000002,
 	HasUpdateFunction = 0x00000004
 }
+
+public enum EAnimNodePropertySource
+{
+	DefaultObject,
+	NodeData,
+	ConstantData,
+	MutableData,
+	ConstantDataEntry,
+	MutableDataEntry
+}
+
+public sealed class FAnimNodePropertyValue
+{
+	public EAnimNodePropertySource Source { get; }
+	public int PropertyIndex { get; }
+	public FPropertyTag PropertyTag { get; }
+	public object? ResolvedValue { get; }
+
+	public string Name => PropertyTag.Name.Text;
+	public string PropertyType => PropertyTag.PropertyType.Text;
+	public int ArrayIndex => PropertyTag.ArrayIndex;
+
+	public FAnimNodePropertyValue(EAnimNodePropertySource source, int propertyIndex, FPropertyTag propertyTag, object? resolvedValue)
+	{
+		Source = source;
+		PropertyIndex = propertyIndex;
+		PropertyTag = propertyTag;
+		ResolvedValue = resolvedValue;
+	}
+}
+
+public sealed class FAnimNodeResolvedProperty
+{
+	public string Name { get; }
+	public int PropertyIndex { get; private set; }
+	public string DeclaredType { get; private set; }
+	public IReadOnlyList<FAnimNodePropertyValue> Values => _values;
+
+	private readonly List<FAnimNodePropertyValue> _values = [];
+
+	public FAnimNodeResolvedProperty(string name, int propertyIndex, string declaredType)
+	{
+		Name = name;
+		PropertyIndex = propertyIndex;
+		DeclaredType = declaredType;
+	}
+
+	public void TryUpdateMetadata(int propertyIndex, string declaredType)
+	{
+		if (PropertyIndex < 0 && propertyIndex >= 0)
+			PropertyIndex = propertyIndex;
+
+		if (string.IsNullOrEmpty(DeclaredType) && !string.IsNullOrEmpty(declaredType))
+			DeclaredType = declaredType;
+	}
+
+	public void AddValue(FAnimNodePropertyValue value)
+	{
+		if (_values.Any(existing => existing.Source == value.Source && ReferenceEquals(existing.PropertyTag, value.PropertyTag)))
+			return;
+
+		_values.Add(value);
+	}
+	}
+
+public sealed class FAnimNodePropertyCollection
+{
+	public FAnimNodeData NodeData { get; }
+	public IReadOnlyList<FAnimNodeResolvedProperty> Properties { get; }
+
+	public FAnimNodePropertyCollection(FAnimNodeData nodeData, IReadOnlyList<FAnimNodeResolvedProperty> properties)
+	{
+		NodeData = nodeData;
+		Properties = properties;
+	}
+	}
+
+internal readonly record struct FAnimNodePropertySchemaEntry(string Name, int PropertyIndex, string DeclaredType, FField? PropertyField);
 
 public class FAnimNodeData
 {
