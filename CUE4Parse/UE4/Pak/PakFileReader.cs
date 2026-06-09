@@ -10,8 +10,12 @@ using CUE4Parse.Encryption.Aes;
 using CUE4Parse.FileProvider.Objects;
 using CUE4Parse.GameTypes.ABI.Encryption.Aes;
 using CUE4Parse.GameTypes.NTE.Encryption;
+using CUE4Parse.GameTypes.PUBG.UE4.Lua;
 using CUE4Parse.GameTypes.Rennsport.Encryption.Aes;
 using CUE4Parse.GameTypes.RocoKingdomWorld.Lua;
+using CUE4Parse.GameTypes.Snowbreak.Encryption.Lua;
+using CUE4Parse.GameTypes.Strinova.Lua;
+using CUE4Parse.GameTypes.UDWN.Lua;
 using CUE4Parse.UE4.Assets.Objects;
 using CUE4Parse.UE4.Exceptions;
 using CUE4Parse.UE4.Objects.Core.Misc;
@@ -103,6 +107,8 @@ namespace CUE4Parse.UE4.Pak
                         return RennsportCompressedExtract(reader, pakEntry);
                     case EGame.GAME_DragonQuestXI:
                         return DQXIExtract(reader, pakEntry);
+                    case EGame.GAME_CenturyAgeofAshes when pakEntry.CompressionMethod is Compression.CompressionMethod.PWC:
+                        return CenturyExtract(reader, pakEntry);
                     case EGame.GAME_ArenaBreakoutInfinite when header is null || ABIDecryption.encryptedFiles.Contains(pakEntry.Extension, StringComparer.OrdinalIgnoreCase):
                         return ABIExtract(reader, pakEntry);
                 }
@@ -151,6 +157,13 @@ namespace CUE4Parse.UE4.Pak
                         return NRCLua.DecryptLuaBytecode(pakEntry.Path, uncompressed);
                     case EGame.GAME_NevernessToEverness when pakEntry.Extension is "ini":
                         return NevernessToEvernessIniEncryption.DecryptIni(uncompressed, requestedSize);
+                    case EGame.GAME_Snowbreak when pakEntry.Extension is "lua":
+                        return SnowbreakLua.DecryptLua(uncompressed, requestedSize);
+                    case EGame.GAME_Undawn when pakEntry.Extension is "lua":
+                        return UndawnLua.DecryptLuaBytecode(pakEntry.Path, uncompressed);
+                    case EGame.GAME_Strinova when pakEntry.Extension is "lua":
+                        uncompressed = StrinovaLua.DecryptLuaBytecode(uncompressed);
+                        break;
                     default:
                         break;
                 }
@@ -191,6 +204,15 @@ namespace CUE4Parse.UE4.Pak
                     return NRCLua.DecryptLuaBytecode(pakEntry.Path, data);
                 case EGame.GAME_NevernessToEverness when pakEntry.Extension is "ini":
                     return NevernessToEvernessIniEncryption.DecryptIni(data, requestedSize);
+                case EGame.GAME_Snowbreak when pakEntry.Extension is "lua":
+                    return SnowbreakLua.DecryptLua(data, requestedSize);
+                case EGame.GAME_GameForPeace when pakEntry.Extension is "lua":
+                    return GameForPeaceLua.DecryptLuaBytecode(pakEntry.Path, data);
+                case EGame.GAME_Undawn when pakEntry.Extension is "lua":
+                    return UndawnLua.DecryptLuaBytecode(pakEntry.Path, data);
+                case EGame.GAME_Strinova when pakEntry.Extension is "lua":
+                    data = StrinovaLua.DecryptLuaBytecode(data);
+                    break;
                 default:
                     break;
             }
@@ -209,7 +231,20 @@ namespace CUE4Parse.UE4.Pak
             watch.Start();
 
             if (Info.Version >= PakFile_Version_PathHashIndex)
-                ReadIndexUpdated(pathComparer);
+            {
+                switch (Game)
+                {
+                    case EGame.GAME_CrystalOfAtlan:
+                        CoAReadIndexUpdated(pathComparer);
+                        break;
+                    case EGame.GAME_DragonSwordAwakening:
+                        DragonSwordReadIndexUpdated(pathComparer);
+                        break;
+                    default:
+                        ReadIndexUpdated(pathComparer);
+                        break;
+                }
+            }
             else if (Info.IndexIsFrozen)
                 ReadFrozenIndex(pathComparer);
             else
@@ -281,12 +316,6 @@ namespace CUE4Parse.UE4.Pak
 
         private void ReadIndexUpdated(StringComparer pathComparer)
         {
-            if (Ar.Game == EGame.GAME_CrystalOfAtlan)
-            {
-                CoAReadIndexUpdated(pathComparer);
-                return;
-            }
-
             // Prepare primary index and decrypt if necessary
             Ar.Position = Info.IndexOffset;
             using FArchive primaryIndex = new FByteArchive($"{Name} - Primary Index", ReadAndDecryptIndex((int) Info.IndexSize));

@@ -6,7 +6,6 @@ using CUE4Parse.UE4.Objects.Engine;
 using CUE4Parse.UE4.Objects.UObject;
 using CUE4Parse.UE4.Versions;
 using Newtonsoft.Json;
-using Serilog;
 
 namespace CUE4Parse.UE4.Assets.Exports.StaticMesh;
 
@@ -31,7 +30,11 @@ public class UStaticMesh : UObject
 
         var stripDataFlags = new FStripDataFlags(Ar);
         bCooked = Ar.ReadBoolean();
-        BodySetup = new FPackageIndex(Ar);
+
+        if (Ar.Game == EGame.GAME_WutheringWaves && GetOrDefault<bool>("bUseStandaloneBodySetup"))
+            BodySetup = GetOrDefault<FPackageIndex>("StandaloneBodySetup");
+        else
+            BodySetup = new FPackageIndex(Ar);
 
         if (Ar.Versions["StaticMesh.HasNavCollision"])
             NavCollision = new FPackageIndex(Ar);
