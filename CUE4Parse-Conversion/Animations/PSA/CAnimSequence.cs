@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using CUE4Parse.UE4.Assets.Exports.Animation;
 using CUE4Parse.UE4.Objects.Core.Math;
 
@@ -11,6 +9,7 @@ namespace CUE4Parse_Conversion.Animations.PSA
         public readonly FTransform[]? RetargetBasePose;
 
         public string Name;
+        public string? SlotName;
         public readonly int NumFrames;
         public readonly float FramesPerSecond;
         public readonly bool IsAdditive;

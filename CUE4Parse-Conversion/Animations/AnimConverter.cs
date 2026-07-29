@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -69,7 +67,7 @@ namespace CUE4Parse_Conversion.Animations
                         continue;
 
                     var seq = animSequence.ConvertSequence(skeleton);
-                    seq.Name = slotAnimTrack.SlotName.Text;
+                    seq.SlotName = slotAnimTrack.SlotName.Text;
                     seq.StartPos = segment.StartPos;
                     seq.AnimEndTime = segment.AnimEndTime;
                     seq.LoopingCount = segment.LoopingCount;
