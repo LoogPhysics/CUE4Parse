@@ -9,9 +9,9 @@ namespace CUE4Parse.UE4.Objects.Meshes;
 [JsonConverter(typeof(FPositionVertexBufferConverter))]
 public class FPositionVertexBuffer
 {
-    public FVector[] Verts;
-    public int Stride;
-    public int NumVertices;
+    [JsonIgnore] public FVector[] Verts { get; protected set; }
+    public int Stride { get; protected set; }
+    public int NumVertices { get; protected set; }
 
     public FPositionVertexBuffer()
     {
@@ -102,6 +102,8 @@ public class FPositionVertexBuffer
         Stride = Ar.Read<int>();
         NumVertices = Ar.Read<int>();
 
+        if (Ar.Game is GAME_TamasShadowveil) Ar.Position += 4;
+
         if (Ar.Game is GAME_Valorant_PRE_11_2 or GAME_NeedForSpeedMobile || (Ar.Game is GAME_ArenaBreakoutInfinite or GAME_ArenaBreakoutMobile && Stride == 8))
         {
             bool bUseFullPrecisionPositions = Ar.Game is not GAME_ArenaBreakoutInfinite and not GAME_ArenaBreakoutMobile && Ar.ReadBoolean();
@@ -133,6 +135,12 @@ public class FPositionVertexBuffer
             Verts = new FVector[vertsHalf.Length];
             for (int i = 0; i < vertsHalf.Length; i++)
                 Verts[i] = vertsHalf[i];
+            return;
+        }
+        if (Ar.Game is GAME_Splitgate2 )
+        {
+            Ar.Position += 1;
+            Verts = Stride == 8 ? Ar.ReadBulkArray<FVector>(() => Ar.Read<FHalfVector4>()) : Ar.ReadBulkArray<FVector>();
             return;
         }
         if (Ar.Game is GAME_DaysGone)
@@ -173,6 +181,16 @@ public class FPositionVertexBuffer
             NumVertices >>= 9;
         }
         if (Ar.Game == GAME_Gollum) Ar.Position += 25;
+        if (Ar.Game is GAME_GearsofWarEDay && NumVertices == 0) return;
+
+        if (Ar.Game == GAME_LifeIsStrange && (int)Ar.LicenseeVer >= 18)
+        {
+            Ar.Position += sizeof(int) * 2; // int, bool
+        }
+        if (Ar.Game == GAME_LifeIsStrange && (int)Ar.LicenseeVer >= 20)
+        {
+            Ar.Position += sizeof(float) * 6; // FVector, FVector
+        }
 
         Verts = Ar.ReadBulkArray<FVector>();
     }

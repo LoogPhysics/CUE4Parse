@@ -16,7 +16,7 @@ public class FTexture2DMipMap
     public int SizeZ;
 
     public FTexture2DMipMap() { }
-    
+
     public FTexture2DMipMap(int sizeX, int sizeY, int sizeZ)
     {
         SizeX = sizeX;
@@ -65,10 +65,18 @@ public class FTexture2DMipMap
         }
     }
 
+    public FTexture2DMipMap(FAssetArchive Ar, string tfc)
+    {
+        BulkData = new FByteBulkData(Ar, tfc);
+
+        SizeX = Ar.Read<int>();
+        SizeY = Ar.Read<int>();
+        SizeZ = 1;
+    }
+
     public bool EnsureValidBulkData(UTextureAllMipDataProviderFactory? provider, int mipLevel)
     {
-        var bulkData = BulkData?.Data;
-        if (bulkData != null && bulkData.Length > 0)
+        if (BulkData?.Data is { Length: > 0 })
             return true;
 
         switch (provider)
@@ -104,5 +112,24 @@ public class FTexture2DMipMap
         }
 
         return false;
+    }
+
+    public class FLegacyMipMap
+    {
+        public FByteBulkData BulkData;
+        public int USize;
+        public int VSize;
+        public byte UBits;
+        public byte VBits;
+
+        public FLegacyMipMap(FAssetArchive Ar)
+        {
+            BulkData = new FByteBulkData(Ar);
+
+            USize = Ar.Read<int>();
+            VSize = Ar.Read<int>();
+            UBits = Ar.Read<byte>();
+            VBits = Ar.Read<byte>();
+        }
     }
 }
