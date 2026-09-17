@@ -13,7 +13,7 @@ public class UDNAAsset : UObject
     public Dictionary<string, IRawBase> Sections;
     public Dictionary<string, IRawBase> Layers;
     public Lazy<byte[]>? DNAData;
-    public string DnaFileName;
+    public string? DnaFileName;
 
     private readonly byte[] _signature = "DNA"u8.ToArray();
     private readonly byte[] _eof = "AND"u8.ToArray();
@@ -22,7 +22,7 @@ public class UDNAAsset : UObject
     public override void Deserialize(FAssetArchive Ar, long validPos)
     {
         base.Deserialize(Ar, validPos);
-        DnaFileName = GetOrDefault(nameof(DnaFileName), string.Empty);
+        DnaFileName = GetOrDefault<string>(nameof(DnaFileName));
 
         if (FDNAAssetCustomVersion.Get(Ar) >= FDNAAssetCustomVersion.Type.BeforeCustomVersionWasAdded)
         {
@@ -58,6 +58,23 @@ public class UDNAAsset : UObject
 
                 if (Ar.Game is GAME_ArenaBreakoutInfinite or GAME_ArenaBreakoutMobile)
                     return;
+                if (Ar.Game is GAME_AliensFireteamElite2)
+                {
+                    startPos = endianAr.Position;
+
+                    signature = endianAr.ReadBytes(3);
+                    if (!signature.SequenceEqual(_signature))
+                        throw new InvalidDataException("Invalid layer start signature");
+
+                    LayerVersion = new DNAVersion(endianAr);
+                    sectionLookupTable = new SectionLookupTable(endianAr);
+                    indexTable = new IndexTable(sectionLookupTable, Version);
+                    ReadLayers(endianAr, LayerVersion.FileVersion, indexTable, startPos, out Layers, false);
+                    eof = endianAr.ReadBytes(3);
+                    if (!eof.SequenceEqual(_eof))
+                        throw new InvalidDataException("Invalid end of file signature");
+                    return;
+                }
             }
             else if (Version.FileVersion >= FileVersion.v26)
             {

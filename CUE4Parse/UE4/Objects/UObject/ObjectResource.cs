@@ -63,7 +63,7 @@ namespace CUE4Parse.UE4.Objects.UObject
         public bool IsImport => Index < 0;
 
         private string? _name;
-        public string Name => _name ?? (_name = ResolvedObject?.Name.Text ?? "None");
+        public string Name => _name ??= ResolvedObject?.Name.Text ?? "None";
 
         public FPackageIndex(FAssetArchive Ar, int index)
         {
@@ -247,12 +247,28 @@ namespace CUE4Parse.UE4.Objects.UObject
             {
                 new FPackageIndex(Ar); // Archetype
             }
-            ObjectFlags = Ar.Read<uint>();
+
+            if (Ar.Ver >= EUnrealEngineObjectUE3Version.Use64BitFlag && Ar.Game < GAME_UE4_0)
+            {
+                Ar.Position += sizeof(ulong); // ulong - ObjectFlagsLegacy
+            }
+            else
+            {
+                ObjectFlags = Ar.Read<uint>();
+            }
 
             if (Ar.Ver < EUnrealEngineObjectUE4Version.e64BIT_EXPORTMAP_SERIALSIZES)
             {
                 SerialSize = Ar.Read<int>();
-                SerialOffset = Ar.Read<int>();
+
+                if (Ar.Game == GAME_RocketLeague && (int)Ar.LicenseeVer > 22)
+                {
+                    SerialOffset = Ar.Read<long>();
+                }
+                else if (SerialSize > 0 || Ar.Ver >= EUnrealEngineObjectUE3Version.MOVED_EXPORTIMPORTMAPS_ADDED_TOTALHEADERSIZE)
+                {
+                    SerialOffset = Ar.Read<int>();
+                }
             }
             else
             {
@@ -267,11 +283,9 @@ namespace CUE4Parse.UE4.Objects.UObject
                 NotForServer = Ar.ReadBoolean();
             }
 
-            PackageGuid = Ar.Ver < EUnrealEngineObjectUE5Version.REMOVE_OBJECT_EXPORT_PACKAGE_GUID ? Ar.Read<FGuid>() : default;
-            IsInheritedInstance = Ar.Ver >= EUnrealEngineObjectUE5Version.TRACK_OBJECT_EXPORT_IS_INHERITED && Ar.ReadBoolean();
             if (Ar.Ver >= EUnrealEngineObjectUE3Version.AddedComponentMapToExports && Ar.Ver < EUnrealEngineObjectUE3Version.REMOVED_COMPONENT_MAP)
             {
-                Ar.ReadMap(() => Ar.ReadFName(), () => new FPackageIndex(Ar)); // LegacyComponentMap
+                Ar.ReadMap(Ar.ReadFName, () => new FPackageIndex(Ar)); // LegacyComponentMap
             }
 
             if (Ar.Ver >= EUnrealEngineObjectUE3Version.FOBJECTEXPORT_EXPORTFLAGS && Ar.Game < GAME_UE4_0)
@@ -285,6 +299,9 @@ namespace CUE4Parse.UE4.Objects.UObject
                 {
                     Ar.ReadArray<int>(); // NetObjectCount
                 }
+
+                PackageGuid = Ar.Ver < EUnrealEngineObjectUE5Version.REMOVE_OBJECT_EXPORT_PACKAGE_GUID ? Ar.Read<FGuid>() : default;
+                IsInheritedInstance = Ar.Ver >= EUnrealEngineObjectUE5Version.TRACK_OBJECT_EXPORT_IS_INHERITED && Ar.ReadBoolean();
 
                 if (Ar.Ver >= EUnrealEngineObjectUE3Version.AddedPackageFlags)
                 {
