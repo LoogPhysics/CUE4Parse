@@ -129,7 +129,7 @@ public class FPositionVertexBuffer
                 return;
             }
         }
-        if (Ar.Game is GAME_Gothic1Remake && Stride == 8)
+        if (Ar.Game is GAME_Gothic1Remake or GAME_DestroyAllHumans2Reprobed && Stride == 8)
         {
             var vertsHalf = Ar.ReadBulkArray<FHalfVector4>();
             Verts = new FVector[vertsHalf.Length];
@@ -137,7 +137,7 @@ public class FPositionVertexBuffer
                 Verts[i] = vertsHalf[i];
             return;
         }
-        if (Ar.Game is GAME_Splitgate2 )
+        if (Ar.Game is GAME_Splitgate2 or GAME_Empulse)
         {
             Ar.Position += 1;
             Verts = Stride == 8 ? Ar.ReadBulkArray<FVector>(() => Ar.Read<FHalfVector4>()) : Ar.ReadBulkArray<FVector>();
